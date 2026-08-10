@@ -4,119 +4,289 @@ on:
   schedule:
     - cron: '0 3 * * *'  # 每天凌晨3点 UTC (北京时间11点)
   workflow_dispatch:  # 允许手动触发
+    inputs:
+      force_upload:
+        description: '强制上传所有IP（跳过测试）'
+        required: false
+        default: 'false'
+        type: boolean
+      max_ips:
+        description: '最大上传IP数量'
+        required: false
+        default: '50'
+        type: string
+
+env:
+  WORKER_API: ${{ secrets.WORKER_API || 'https://jjp.bearno1.dpdns.org/test/api/preferred-ips' }}
+  MAX_LATENCY: 200  # 最大延迟阈值(ms)
+  MIN_SUCCESS_RATE: 0.6  # 最低成功率
 
 jobs:
   optimize:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      
-      - name: Install dependencies
+      - name: Setup environment
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl jq
+          echo "=== 环境信息 ==="
+          echo "OS: $(uname -a)"
+          echo "Date: $(date)"
+          echo "Worker API: $WORKER_API"
       
       - name: Download yx-tools
         run: |
-          wget -q https://github.com/byJoey/yx-tools/releases/latest/download/yx_linux_amd64
-          chmod +x yx_linux_amd64
+          echo "=== 下载yx-tools ==="
+          wget -q https://github.com/byJoey/yx-tools/releases/latest/download/yx_linux_amd64 -O yx
+          chmod +x yx
+          ./yx --version || echo "yx-tools下载完成"
       
       - name: Get candidate IPs from multiple sources
+        id: get_ips
         run: |
           echo "=== 获取候选IP ==="
           
-          # 源1: junzhen
-          curl -sk "https://cf.junzhen.qzz.io/best_ips.txt" > candidates_1.txt 2>/dev/null || true
+          # 清空旧文件
+          > all_candidates.txt
           
-          # 源2: GitHub开源项目
-          curl -sk "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list/raw/cf.txt" > candidates_2.txt 2>/dev/null || true
+          # 源1: junzhen (主要来源)
+          echo "[1/5] 从junzhen获取..."
+          curl -sk --connect-timeout 10 "https://cf.junzhen.qzz.io/best_ips.txt" >> all_candidates.txt 2>/dev/null || true
           
-          # 合并并去重
-          cat candidates_1.txt candidates_2.txt | \
-              grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$' | \
+          # 源2: stock-cf
+          echo "[2/5] 从stock-cf获取..."
+          curl -sk --connect-timeout 10 "https://raw.githubusercontent.com/stock-cf/cf-workers/main/ip.txt" >> all_candidates.txt 2>/dev/null || true
+          
+          # 源3: peasoft
+          echo "[3/5] 从peasoft获取..."
+          curl -sk --connect-timeout 10 "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list/raw/cf.txt" >> all_candidates.txt 2>/dev/null || true
+          
+          # 源4: 1010010
+          echo "[4/5] 从1010010获取..."
+          curl -sk --connect-timeout 10 "https://raw.githubusercontent.com/1010010/Edge-tutorial/main/ip.txt" >> all_candidates.txt 2>/dev/null || true
+          
+          # 源5: Cloudflare官方IP段 (仅443端口)
+          echo "[5/5] 从Cloudflare官方获取..."
+          curl -sk --connect-timeout 10 "https://www.cloudflare.com/ips-v4/" | while read ip; do
+            echo "$ip:443" >> all_candidates.txt 2>/dev/null || true
+          done
+          
+          # 格式化和去重
+          echo "=== 处理候选IP ==="
+          grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$' all_candidates.txt | \
               sort -u > candidates.txt
           
-          echo "候选IP数量: $(wc -l < candidates.txt)"
+          TOTAL=$(wc -l < candidates.txt)
+          echo "总候选IP数量: $TOTAL"
+          echo "total_ips=$TOTAL" >> $GITHUB_OUTPUT
+          
+          # 显示前10个
+          echo "前10个候选IP:"
           head -10 candidates.txt
       
       - name: Test IPs with yx-tools
+        id: test_ips
         run: |
           echo "=== 测试IP延迟 ==="
-          ./yx_linux_amd64 test -f candidates.txt -n 5 -nodl -tl 200 -o results.csv || true
           
-          if [ -f results.csv ]; then
-            echo "可用IP数量: $(wc -l < results.csv)"
-            cat results.csv
+          if [ "${{ github.event.inputs.force_upload }}" = "true" ]; then
+            echo "强制模式：跳过测试，直接使用候选IP"
+            # 取前50个IP
+            head -50 candidates.txt | awk -F: '{print $1","$2",999,0,0,Unknown"}' > results.csv
           else
-            echo "测试未产出结果，使用原始候选列表"
-            head -10 candidates.txt | awk -F: '{print $1","$2",999,0,0,Unknown"}' > results.csv
+            # 正常测试模式
+            ./yx test -f candidates.txt -n 5 -nodl -tl $MAX_LATENCY -o results.csv || true
+            
+            # 如果测试失败，使用备选方案
+            if [ ! -f results.csv ] || [ $(wc -l < results.csv 2>/dev/null || echo 0) -eq 0 ]; then
+              echo "测试未产出结果，使用候选IP列表"
+              head -30 candidates.txt | awk -F: '{print $1","$2",999,0,0,Unknown"}' > results.csv
+            fi
           fi
+          
+          # 统计结果
+          SUCCESS_COUNT=$(wc -l < results.csv)
+          echo "可用IP数量: $SUCCESS_COUNT"
+          echo "success_count=$SUCCESS_COUNT" >> $GITHUB_OUTPUT
+          
+          # 显示结果
+          echo "=== 测试结果 ==="
+          cat results.csv | head -20
+      
+      - name: Validate and filter IPs
+        id: validate
+        run: |
+          echo "=== 验证和过滤IP ==="
+          
+          # 读取最大上传数量
+          MAX_UPLOAD=${{ github.event.inputs.max_ips || '50' }}
+          
+          # 过滤有效的IP
+          grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+,[0-9]+' results.csv | \
+              head -$MAX_UPLOAD > valid_results.csv
+          
+          VALID_COUNT=$(wc -l < valid_results.csv)
+          echo "验证通过IP数量: $VALID_COUNT"
+          echo "valid_count=$VALID_COUNT" >> $GITHUB_OUTPUT
+          
+          # 生成摘要
+          echo "=== 上传摘要 ==="
+          echo "最大延迟阈值: ${MAX_LATENCY}ms"
+          echo "最大上传数量: $MAX_UPLOAD"
+          echo "实际上传数量: $VALID_COUNT"
+      
+      - name: Backup current nodes
+        run: |
+          echo "=== 备份当前节点 ==="
+          
+          # 获取当前节点列表
+          CURRENT=$(curl -sk "$WORKER_API" 2>/dev/null || echo '{"data":[]}')
+          echo "$CURRENT" > backup_$(date +%Y%m%d_%H%M%S).json
+          
+          # 统计当前节点
+          CURRENT_COUNT=$(echo "$CURRENT" | jq '.count // 0' 2>/dev/null || echo 0)
+          echo "当前节点数量: $CURRENT_COUNT"
       
       - name: Upload to JJP Worker
-        env:
-          WORKER_API: ${{ secrets.WORKER_API }}
+        id: upload
         run: |
-          echo "=== 上报优选IP到Worker ==="
-          
-          # 如果没有设置secret，使用默认API地址
-          API_URL=\"${WORKER_API:-https://jjp.bearno1.dpdns.org/test/api/preferred-ips}\"
+          echo "=== 上传优选IP到Worker ==="
           
           SUCCESS_COUNT=0
+          EXIST_COUNT=0
           FAIL_COUNT=0
           
           while IFS=, read -r ip port latency speed loss colo; do
-            # 跳过注释行和空行
-            [[ \"$ip\" =~ ^#.*$ ]] && continue
-            [[ -z \"$ip\" ]] && continue
+            # 跳过注释和空行
+            [[ "$ip" =~ ^#.*$ ]] && continue
+            [[ -z "$ip" ]] && continue
+            
+            # 清理IP地址
+            ip=$(echo "$ip" | tr -d '[:space:]')
+            port=$(echo "$port" | tr -d '[:space:]')
             
             # 上报到Worker
-            RESPONSE=$(curl -sk -X POST \"$API_URL\" \
-              -H \"Content-Type: application/json\" \
-              -d \"{\\\"ip\\\":\\\"$ip\\\",\\\"port\\\":$port,\\\"name\\\":\\\"GH-${colo:-Unknown}\\\"}\" 2>&1)
+            RESPONSE=$(curl -sk -X POST "$WORKER_API" \
+              -H "Content-Type: application/json" \
+              -d "{\"ip\":\"$ip\",\"port\":$port,\"name\":\"GH-${colo:-Auto}\"}" 2>&1)
             
-            echo \"上传 $ip:$port - $RESPONSE\"
-            
-            if echo \"$RESPONSE\" | grep -q '\"success\":true'; then
+            # 检查响应
+            if echo "$RESPONSE" | grep -q '"success":true'; then
               SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+              echo "[OK] $ip:$port"
+            elif echo "$RESPONSE" | grep -q "已存在"; then
+              EXIST_COUNT=$((EXIST_COUNT + 1))
+              echo "[EXISTS] $ip:$port"
             else
               FAIL_COUNT=$((FAIL_COUNT + 1))
+              echo "[FAIL] $ip:$port - $RESPONSE"
             fi
             
             sleep 1  # 避免KV竞态
-          done < results.csv
+          done < valid_results.csv
           
-          echo \"上传完成: 成功=$SUCCESS_COUNT, 失败=$FAIL_COUNT\"
+          echo ""
+          echo "=== 上传统计 ==="
+          echo "成功: $SUCCESS_COUNT"
+          echo "已存在: $EXIST_COUNT"
+          echo "失败: $FAIL_COUNT"
           
-          echo \"等待32秒让KV缓存失效...\"
+          echo "success=$SUCCESS_COUNT" >> $GITHUB_OUTPUT
+          echo "existing=$EXIST_COUNT" >> $GITHUB_OUTPUT
+          echo "failed=$FAIL_COUNT" >> $GITHUB_OUTPUT
+      
+      - name: Wait for KV cache
+        run: |
+          echo "=== 等待KV缓存失效 ==="
+          echo "等待32秒..."
           sleep 32
+          echo "等待完成"
+      
+      - name: Verify update
+        run: |
+          echo "=== 验证更新结果 ==="
           
-          # 验证更新
-          echo \"=== 验证当前节点列表 ===\"
-          curl -sk \"$API_URL\" | jq '.count' 2>/dev/null || echo \"验证完成\"
+          # 获取更新后的节点列表
+          UPDATED=$(curl -sk "$WORKER_API" 2>/dev/null)
+          UPDATED_COUNT=$(echo "$UPDATED" | jq '.count // 0' 2>/dev/null || echo 0)
+          
+          echo "更新后节点数量: $UPDATED_COUNT"
+          
+          # 显示节点列表
+          echo ""
+          echo "=== 当前节点列表 ==="
+          echo "$UPDATED" | jq -r '.data[] | "\(.ip):\(.port) \(.name)"' 2>/dev/null | head -20
       
       - name: Cleanup dead nodes
-        env:
-          WORKER_API: ${{ secrets.WORKER_API }}
+        if: success()
         run: |
-          echo \"=== 清理失效节点 ===\"
-          API_URL=\"${WORKER_API:-https://jjp.bearno1.dpdns.org/test/api/preferred-ips}\"
+          echo "=== 清理失效节点 ==="
           
-          # 获取当前节点列表
-          CURRENT_NODES=$(curl -sk \"$API_URL\")
-          echo \"当前节点: $CURRENT_NODES\" | head -200
+          # 获取当前节点
+          NODES=$(curl -sk "$WORKER_API" 2>/dev/null)
           
-          echo \"清理完成\"
+          # 逐个测试
+          CLEANED=0
+          echo "$NODES" | jq -c '.data[]' 2>/dev/null | while read -r node; do
+            ip=$(echo "$node" | jq -r '.ip')
+            port=$(echo "$node" | jq -r '.port')
+            name=$(echo "$node" | jq -r '.name')
+            
+            # 跳过保底节点
+            if [[ "$name" == *"KR-首选"* ]] || [[ "$name" == *"KR-次选"* ]] || [[ "$name" == *"KR-三选"* ]]; then
+              echo "[SKIP] $ip:$port (保底节点)"
+              continue
+            fi
+            
+            # 测试连接
+            if ! timeout 5 bash -c "echo >/dev/tcp/$ip/$port" 2>/dev/null; then
+              echo "[DELETE] $ip:$port (连接失败)"
+              curl -sk -X DELETE "$WORKER_API" \
+                -H "Content-Type: application/json" \
+                -d "{\"ip\":\"$ip\",\"port\":$port}" 2>/dev/null || true
+              CLEANED=$((CLEANED + 1))
+              sleep 1
+            else
+              echo "[OK] $ip:$port"
+            fi
+          done
+          
+          echo "清理完成: $CLEANED 个节点"
       
-      - name: Summary
+      - name: Generate summary
+        if: always()
         run: |
-          echo \"=== JJP自动优选完成 ===\"
-          echo \"时间: $(date)\"
-          echo \"结果文件:\"
-          ls -la results.csv candidates.txt 2>/dev/null || true
+          echo "=== 生成运行摘要 ==="
+          echo ""
+          echo "📊 JJP自动优选运行报告"
+          echo "========================"
+          echo "运行时间: $(date)"
+          echo "触发方式: ${{ github.event_name }}"
+          echo ""
+          echo "📈 数据统计:"
+          echo "  - 候选IP总数: ${{ steps.get_ips.outputs.total_ips }}"
+          echo "  - 测试通过: ${{ steps.test_ips.outputs.success_count }}"
+          echo "  - 验证通过: ${{ steps.validate.outputs.valid_count }}"
+          echo "  - 上传成功: ${{ steps.upload.outputs.success }}"
+          echo "  - 已存在: ${{ steps.upload.outputs.existing }}"
+          echo "  - 上传失败: ${{ steps.upload.outputs.failed }}"
+          echo ""
+          echo "🔗 相关链接:"
+          echo "  - 仓库: https://github.com/${{ github.repository }}"
+          echo "  - Actions: https://github.com/${{ github.repository }}/actions"
+          echo "  - JJP订阅: https://jjp.bearno1.dpdns.org/test/sub"
+          echo ""
+          echo "========================"
+      
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimize-results-${{ github.run_id }}
+          path: |
+            results.csv
+            backup_*.json
+          retention-days: 7

@@ -1,0 +1,154 @@
+name: JJP Health Check
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # 每6小时检查一次
+  workflow_dispatch:
+
+env:
+  WORKER_API: ${{ secrets.WORKER_API || 'https://jjp.bearno1.dpdns.org/test/api/preferred-ips' }}
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Health Check
+        id: health
+        run: |
+          echo "=== JJP健康检查 ==="
+          echo "时间: $(date)"
+          
+          # 检查Worker API
+          echo ""
+          echo "[1/4] 检查Worker API..."
+          API_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/api_response.json "$WORKER_API" 2>/dev/null)
+          API_STATUS=$(echo "$API_RESPONSE" | tail -1)
+          
+          if [ "$API_STATUS" = "200" ]; then
+            echo "✅ Worker API正常"
+            API_OK=true
+          else
+            echo "❌ Worker API异常: HTTP $API_STATUS"
+            API_OK=false
+          fi
+          
+          # 检查节点数量
+          echo ""
+          echo "[2/4] 检查节点数量..."
+          NODE_COUNT=$(cat /tmp/api_response.json | jq '.count // 0' 2>/dev/null || echo 0)
+          echo "当前节点数量: $NODE_COUNT"
+          
+          if [ "$NODE_COUNT" -lt 3 ]; then
+            echo "⚠️ 节点数量过少"
+            NODE_OK=false
+          else
+            echo "✅ 节点数量正常"
+            NODE_OK=true
+          fi
+          
+          # 检查节点延迟
+          echo ""
+          echo "[3/4] 检查节点延迟..."
+          TOTAL_LATENCY=0
+          VALID_NODES=0
+          
+          cat /tmp/api_response.json | jq -c '.data[]' 2>/dev/null | while read -r node; do
+            ip=$(echo "$node" | jq -r '.ip')
+            port=$(echo "$node" | jq -r '.port')
+            
+            # 测试延迟
+            START=$(date +%s%N)
+            timeout 3 bash -c "echo >/dev/tcp/$ip/$port" 2>/dev/null
+            END=$(date +%s%N)
+            
+            if [ $? -eq 0 ]; then
+              LATENCY=$(( (END - START) / 1000000 ))
+              echo "  $ip:$port - ${LATENCY}ms"
+              TOTAL_LATENCY=$((TOTAL_LATENCY + LATENCY))
+              VALID_NODES=$((VALID_NODES + 1))
+            else
+              echo "  $ip:$port - 超时"
+            fi
+          done
+          
+          # 检查订阅可用性
+          echo ""
+          echo "[4/4] 检查订阅可用性..."
+          SUB_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/sub_response.txt "https://jjp.bearno1.dpdns.org/test/sub" 2>/dev/null)
+          SUB_STATUS=$(echo "$SUB_RESPONSE" | tail -1)
+          SUB_SIZE=$(wc -c < /tmp/sub_response.txt 2>/dev/null || echo 0)
+          
+          if [ "$SUB_STATUS" = "200" ] && [ "$SUB_SIZE" -gt 1000 ]; then
+            echo "✅ 订阅可用 (${SUB_SIZE} bytes)"
+            SUB_OK=true
+          else
+            echo "❌ 订阅异常: HTTP $SUB_STATUS, Size: $SUB_SIZE"
+            SUB_OK=false
+          fi
+          
+          # 生成健康报告
+          echo ""
+          echo "=== 健康报告 ==="
+          echo "Worker API: $(if $API_OK; then echo '✅'; else echo '❌'; fi)"
+          echo "节点数量: $(if $NODE_OK; then echo '✅'; else echo '⚠️'; fi) ($NODE_COUNT)"
+          echo "订阅可用: $(if $SUB_OK; then echo '✅'; else echo '❌'; fi)"
+          
+          # 计算健康分数
+          SCORE=0
+          $API_OK && SCORE=$((SCORE + 40))
+          $NODE_OK && SCORE=$((SCORE + 30))
+          $SUB_OK && SCORE=$((SCORE + 30))
+          
+          echo ""
+          echo "健康分数: $SCORE/100"
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+          echo "node_count=$NODE_COUNT" >> $GITHUB_OUTPUT
+          echo "api_ok=$API_OK" >> $GITHUB_OUTPUT
+          echo "node_ok=$NODE_OK" >> $GITHUB_OUTPUT
+          echo "sub_ok=$SUB_OK" >> $GITHUB_OUTPUT
+      
+      - name: Generate Report
+        if: always()
+        run: |
+          echo "=== 生成健康报告 ==="
+          
+          cat > health_report.md << EOF
+          # JJP健康检查报告
+
+          **检查时间**: $(date)
+          **健康分数**: ${{ steps.health.outputs.score }}/100
+
+          ## 检查结果
+
+          | 项目 | 状态 | 说明 |
+          |------|------|------|
+          | Worker API | $(if [ "${{ steps.health.outputs.api_ok }}" = "true" ]; then echo "✅ 正常"; else echo "❌ 异常"; fi) | API响应正常 |
+          | 节点数量 | $(if [ "${{ steps.health.outputs.node_ok }}" = "true" ]; then echo "✅ 正常"; else echo "⚠️ 过少"; fi) | ${{ steps.health.outputs.node_count }}个节点 |
+          | 订阅可用 | $(if [ "${{ steps.health.outputs.sub_ok }}" = "true" ]; then echo "✅ 正常"; else echo "❌ 异常"; fi) | 订阅可访问 |
+
+          ## 详细信息
+
+          - **Worker API**: $WORKER_API
+          - **订阅地址**: https://jjp.bearno1.dpdns.org/test/sub
+          - **仓库地址**: https://github.com/${{ github.repository }}
+
+          ## 建议
+
+          ${{ steps.health.outputs.score < 60 && '- ⚠️ 健康分数较低，建议检查节点状态' || '- ✅ 系统运行正常' }}
+          ${{ steps.health.outputs.node_count < 5 && '- ⚠️ 节点数量不足，建议运行优选任务' || '' }}
+          EOF
+          
+          cat health_report.md
+      
+      - name: Upload Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-report-${{ github.run_id }}
+          path: health_report.md
+          retention-days: 30
