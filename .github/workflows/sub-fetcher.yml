@@ -1,0 +1,108 @@
+name: JJP Sub Fetcher
+
+on:
+  schedule:
+    # 每6小时执行一次
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Fetch free nodes
+        run: |
+          echo "=== 从免费订阅源抓取节点 ==="
+          
+          # 免费订阅源列表
+          SOURCES=(
+            "https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all"
+            "https://raw.githubusercontent.com/littlebais/free-proxy-nodes/main/v2ray"
+            "https://raw.githubusercontent.com/FreeFolksOn/abc-configs-free-vpn-proxy-list/main/README.md"
+            "https://cdn.jsdelivr.net/gh/xiaoji235/airport-free/v2ray.txt"
+          )
+          
+          # 合并所有节点
+          > all_nodes.txt
+          
+          for SOURCE in "${SOURCES[@]}"; do
+            echo "抓取: $SOURCE"
+            curl -skL "$SOURCE" >> temp.txt 2>/dev/null || true
+            sleep 2
+          done
+          
+          # 提取节点URL
+          grep -oE "(vless|vmess|trojan|ss)://[a-zA-Z0-9+/=?.-]+" temp.txt | sort -u > free_nodes.txt
+          
+          echo "抓取到 $(wc -l < free_nodes.txt) 个节点"
+          
+          # 提取IP和端口
+          > nodes.json
+          echo "[" > nodes.json
+          
+          FIRST=true
+          while IFS= read -r node; do
+            # 提取IP
+            IP=$(echo "$node" | grep -oP '@\K[^:]+' | head -1)
+            PORT=$(echo "$node" | grep -oP ':\K[0-9]+' | head -1)
+            
+            if [ -n "$IP" ] && [ -n "$PORT" ]; then
+              if [ "$FIRST" = true ]; then
+                FIRST=false
+              else
+                echo "," >> nodes.json
+              fi
+              echo "{\"ip\":\"$IP\",\"port\":$PORT,\"name\":\"FREE\"}" >> nodes.json
+            fi
+          done < free_nodes.txt
+          
+          echo "]" >> nodes.json
+          
+          echo "生成 nodes.json"
+      
+      - name: Upload to JJP
+        env:
+          WORKER_API: ${{ secrets.WORKER_API }}
+        run: |
+          echo "=== 上传到JJP Worker ==="
+          
+          # 读取nodes.json并上传
+          NODES=$(cat nodes.json)
+          
+          echo "$NODES" | jq -c '.[]' | while read -r node; do
+            IP=$(echo "$node" | jq -r '.ip')
+            PORT=$(echo "$node" | jq -r '.port')
+            NAME=$(echo "$node" | jq -r '.name')
+            
+            echo "上传: $IP:$PORT"
+            
+            curl -sk -X POST "$WORKER_API" \
+              -H "Content-Type: application/json" \
+              -d "{\"ip\":\"$IP\",\"port\":$PORT,\"name\":\"$NAME\"}" \
+              > /dev/null 2>&1
+            
+            sleep 0.5
+          done
+          
+          echo "上传完成"
+      
+      - name: Cleanup
+        run: |
+          rm -f temp.txt free_nodes.txt nodes.json
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: fetch-log
+          path: |
+            *.log
+          retention-days: 7
