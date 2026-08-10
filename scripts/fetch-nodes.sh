@@ -1,9 +1,9 @@
 #!/bin/bash
-# 从免费订阅源抓取节点，去重后保存到GitHub
+# 从免费订阅源抓取节点，验证并添加地区信息
 
 echo "=== 抓取免费节点 ==="
 
-# 免费订阅源（只保留可用的）
+# 免费订阅源
 SOURCES=(
     "https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all"
     "https://raw.githubusercontent.com/FreeFolksOn/abc-configs-free-vpn-proxy-list/main/v2ray.txt"
@@ -28,22 +28,48 @@ echo ""
 echo "=== 提取节点 ==="
 cat temp_nodes.txt decoded_nodes.txt | \
     grep -oE "(vless|vmess|trojan|ss)://[a-zA-Z0-9+/=?.%&@#-]+" | \
-    sort -u | \
-    head -200 > free_nodes.txt
+    sort -u > all_nodes.txt
 
-echo "去重后节点数: $(wc -l < free_nodes.txt)"
+echo "提取到 $(wc -l < all_nodes.txt) 个节点"
 
-# 按地区分类
+# 验证节点并添加地区信息
 echo ""
-echo "=== 按地区分类 ==="
-echo "日本节点: $(grep -i "japan\|日本" free_nodes.txt | wc -l)"
-echo "韩国节点: $(grep -i "korea\|韩国" free_nodes.txt | wc -l)"
-echo "美国节点: $(grep -i "united states\|美国" free_nodes.txt | wc -l)"
-echo "香港节点: $(grep -i "hong kong\|香港" free_nodes.txt | wc -l)"
-echo "新加坡节点: $(grep -i "singapore\|新加坡" free_nodes.txt | wc -l)"
+echo "=== 验证节点并添加地区信息 ==="
+> verified_nodes.txt
+
+while IFS= read -r node; do
+    # 提取IP/域名
+    ip=$(echo "$node" | grep -oP '@\K[^:]+' | head -1)
+    
+    # 跳过私有IP
+    if echo "$ip" | grep -qE "^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)"; then
+        continue
+    fi
+    
+    # 测试连接
+    if timeout 3 bash -c "echo >/dev/tcp/$ip/443" 2>/dev/null; then
+        # 获取地区信息
+        region=$(curl -sk "http://ip-api.com/json/$ip?fields=country,regionName,city" 2>/dev/null | grep -oP '"country":"[^"]*"' | cut -d'"' -f4)
+        city=$(curl -sk "http://ip-api.com/json/$ip?fields=country,regionName,city" 2>/dev/null | grep -oP '"city":"[^"]*"' | cut -d'"' -f4)
+        
+        # 获取延迟
+        latency=$(curl -sk --connect-timeout 3 -o /dev/null -w "%{time_connect}" "https://$ip:443" 2>/dev/null | cut -d'.' -f1)
+        
+        # 构建节点名称
+        name="${region}/${city} (${latency}ms)"
+        
+        echo "$node" >> verified_nodes.txt
+        echo "✅ $ip - $name"
+    else
+        echo "❌ $ip - 连接失败"
+    fi
+done < all_nodes.txt
+
+echo ""
+echo "验证后节点数: $(wc -l < verified_nodes.txt)"
 
 # 清理
-rm -f temp_nodes.txt decoded_nodes.txt
+rm -f temp_nodes.txt decoded_nodes.txt all_nodes.txt
 
 echo ""
-echo "节点文件已保存: free_nodes.txt"
+echo "节点文件已保存: verified_nodes.txt"
