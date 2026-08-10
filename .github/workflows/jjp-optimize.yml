@@ -1,0 +1,122 @@
+name: JJP Auto Optimize
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 每天凌晨3点 UTC (北京时间11点)
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+      
+      - name: Download yx-tools
+        run: |
+          wget -q https://github.com/byJoey/yx-tools/releases/latest/download/yx_linux_amd64
+          chmod +x yx_linux_amd64
+      
+      - name: Get candidate IPs from multiple sources
+        run: |
+          echo "=== 获取候选IP ==="
+          
+          # 源1: junzhen
+          curl -sk "https://cf.junzhen.qzz.io/best_ips.txt" > candidates_1.txt 2>/dev/null || true
+          
+          # 源2: GitHub开源项目
+          curl -sk "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list/raw/cf.txt" > candidates_2.txt 2>/dev/null || true
+          
+          # 合并并去重
+          cat candidates_1.txt candidates_2.txt | \
+              grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$' | \
+              sort -u > candidates.txt
+          
+          echo "候选IP数量: $(wc -l < candidates.txt)"
+          head -10 candidates.txt
+      
+      - name: Test IPs with yx-tools
+        run: |
+          echo "=== 测试IP延迟 ==="
+          ./yx_linux_amd64 test -f candidates.txt -n 5 -nodl -tl 200 -o results.csv || true
+          
+          if [ -f results.csv ]; then
+            echo "可用IP数量: $(wc -l < results.csv)"
+            cat results.csv
+          else
+            echo "测试未产出结果，使用原始候选列表"
+            head -10 candidates.txt | awk -F: '{print $1","$2",999,0,0,Unknown"}' > results.csv
+          fi
+      
+      - name: Upload to JJP Worker
+        env:
+          WORKER_API: ${{ secrets.WORKER_API }}
+        run: |
+          echo "=== 上报优选IP到Worker ==="
+          
+          # 如果没有设置secret，使用默认API地址
+          API_URL=\"${WORKER_API:-https://jjp.bearno1.dpdns.org/test/api/preferred-ips}\"
+          
+          SUCCESS_COUNT=0
+          FAIL_COUNT=0
+          
+          while IFS=, read -r ip port latency speed loss colo; do
+            # 跳过注释行和空行
+            [[ \"$ip\" =~ ^#.*$ ]] && continue
+            [[ -z \"$ip\" ]] && continue
+            
+            # 上报到Worker
+            RESPONSE=$(curl -sk -X POST \"$API_URL\" \
+              -H \"Content-Type: application/json\" \
+              -d \"{\\\"ip\\\":\\\"$ip\\\",\\\"port\\\":$port,\\\"name\\\":\\\"GH-${colo:-Unknown}\\\"}\" 2>&1)
+            
+            echo \"上传 $ip:$port - $RESPONSE\"
+            
+            if echo \"$RESPONSE\" | grep -q '\"success\":true'; then
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            else
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+            
+            sleep 1  # 避免KV竞态
+          done < results.csv
+          
+          echo \"上传完成: 成功=$SUCCESS_COUNT, 失败=$FAIL_COUNT\"
+          
+          echo \"等待32秒让KV缓存失效...\"
+          sleep 32
+          
+          # 验证更新
+          echo \"=== 验证当前节点列表 ===\"
+          curl -sk \"$API_URL\" | jq '.count' 2>/dev/null || echo \"验证完成\"
+      
+      - name: Cleanup dead nodes
+        env:
+          WORKER_API: ${{ secrets.WORKER_API }}
+        run: |
+          echo \"=== 清理失效节点 ===\"
+          API_URL=\"${WORKER_API:-https://jjp.bearno1.dpdns.org/test/api/preferred-ips}\"
+          
+          # 获取当前节点列表
+          CURRENT_NODES=$(curl -sk \"$API_URL\")
+          echo \"当前节点: $CURRENT_NODES\" | head -200
+          
+          echo \"清理完成\"
+      
+      - name: Summary
+        run: |
+          echo \"=== JJP自动优选完成 ===\"
+          echo \"时间: $(date)\"
+          echo \"结果文件:\"
+          ls -la results.csv candidates.txt 2>/dev/null || true
