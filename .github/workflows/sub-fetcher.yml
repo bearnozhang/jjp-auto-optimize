@@ -6,13 +6,16 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write  # 允许把更新后的节点列表推回仓库
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Fetch free nodes
         run: |
