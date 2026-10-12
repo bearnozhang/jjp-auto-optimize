@@ -18,6 +18,7 @@ on:
 
 env:
   WORKER_API: ${{ secrets.WORKER_API || 'https://jjp.bearno1.dpdns.org/test/api/preferred-ips' }}
+  WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}  # 可选：Worker 端校验的写入 token
   MAX_LATENCY: 200  # 最大延迟阈值(ms)
   MIN_SUCCESS_RATE: 0.6  # 最低成功率
 
@@ -40,7 +41,10 @@ jobs:
       - name: Download yx-tools
         run: |
           echo "=== 下载yx-tools ==="
-          wget -q https://github.com/byJoey/yx-tools/releases/latest/download/yx_linux_amd64 -O yx
+          # v3 起发布文件改为 tar.gz 压缩包
+          wget -q https://github.com/byJoey/yx-tools/releases/latest/download/yx_linux_amd64.tar.gz -O yx.tar.gz
+          tar xzf yx.tar.gz
+          mv yx_linux_amd64 yx
           chmod +x yx
           ./yx --version || echo "yx-tools下载完成"
       
@@ -53,30 +57,18 @@ jobs:
           > all_candidates.txt
           
           # 源1: junzhen (主要来源)
-          echo "[1/5] 从junzhen获取..."
+          echo "[1/1] 从junzhen获取..."
           curl -sk --connect-timeout 10 "https://cf.junzhen.qzz.io/best_ips.txt" >> all_candidates.txt 2>/dev/null || true
           
-          # 源2: stock-cf
-          echo "[2/5] 从stock-cf获取..."
-          curl -sk --connect-timeout 10 "https://raw.githubusercontent.com/stock-cf/cf-workers/main/ip.txt" >> all_candidates.txt 2>/dev/null || true
-          
-          # 源3: peasoft
-          echo "[3/5] 从peasoft获取..."
-          curl -sk --connect-timeout 10 "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list/raw/cf.txt" >> all_candidates.txt 2>/dev/null || true
-          
-          # 源4: 1010010
-          echo "[4/5] 从1010010获取..."
-          curl -sk --connect-timeout 10 "https://raw.githubusercontent.com/1010010/Edge-tutorial/main/ip.txt" >> all_candidates.txt 2>/dev/null || true
-          
-          # 源5: Cloudflare官方IP段 (仅443端口)
-          echo "[5/5] 从Cloudflare官方获取..."
-          curl -sk --connect-timeout 10 "https://www.cloudflare.com/ips-v4/" | while read ip; do
-            echo "$ip:443" >> all_candidates.txt 2>/dev/null || true
-          done
+          # 2026-10-13：stock-cf、peasoft、1010010 三个源已 404，已移除；
+          # Cloudflare 官方 IP 段是 CIDR，下面的格式过滤会丢掉，也移除了。
+          # 候选不够时 yx 会自动下载内置 IP 段。
           
           # 格式化和去重
           echo "=== 处理候选IP ==="
-          grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$' all_candidates.txt | \
+          # junzhen 的行带 "#地区 备注" 后缀，先去掉再过滤
+          sed 's/#.*//; s/[[:space:]]//g' all_candidates.txt | \
+              grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$' | \
               sort -u > candidates.txt
           
           TOTAL=$(wc -l < candidates.txt)
@@ -171,6 +163,7 @@ jobs:
             # 上报到Worker
             RESPONSE=$(curl -sk -X POST "$WORKER_API" \
               -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${WORKER_TOKEN}" \
               -d "{\"ip\":\"$ip\",\"port\":$port,\"name\":\"GH-${colo:-Auto}\"}" 2>&1)
             
             # 检查响应
@@ -246,6 +239,7 @@ jobs:
               echo "[DELETE] $ip:$port (连接失败)"
               curl -sk -X DELETE "$WORKER_API" \
                 -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${WORKER_TOKEN}" \
                 -d "{\"ip\":\"$ip\",\"port\":$port}" 2>/dev/null || true
               CLEANED=$((CLEANED + 1))
               sleep 1
