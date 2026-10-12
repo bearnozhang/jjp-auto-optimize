@@ -37,6 +37,8 @@ jobs:
           echo "OS: $(uname -a)"
           echo "Date: $(date)"
           echo "Worker API: $WORKER_API"
+          # Cloudflare 会给 curl 默认 UA 弹人机验证页，统一换成浏览器 UA
+          echo 'user-agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"' > ~/.curlrc
       
       - name: Download yx-tools
         run: |
