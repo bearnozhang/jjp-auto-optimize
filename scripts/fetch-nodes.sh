@@ -6,8 +6,7 @@ echo "=== 抓取免费节点 ==="
 # 免费订阅源
 SOURCES=(
     "https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all"
-    "https://raw.githubusercontent.com/FreeFolksOn/abc-configs-free-vpn-proxy-list/main/v2ray.txt"
-    "https://raw.githubusercontent.com/FreeFolksOn/abc-configs-free-vpn-proxy-list/main/config.txt"
+    # 2026-10-13：FreeFolksOn 的 v2ray.txt / config.txt 已 404，已移除
 )
 
 # 下载所有订阅
@@ -72,4 +71,11 @@ echo "验证后节点数: $(wc -l < verified_nodes.txt)"
 rm -f temp_nodes.txt decoded_nodes.txt all_nodes.txt
 
 echo ""
-echo "节点文件已保存: verified_nodes.txt"
+# 只有抓到节点时才覆盖 free_nodes.txt，避免源挂掉时清空列表
+if [ -s verified_nodes.txt ]; then
+    mv verified_nodes.txt free_nodes.txt
+    echo "节点文件已保存: free_nodes.txt"
+else
+    rm -f verified_nodes.txt
+    echo "没有抓到可用节点，保留原有 free_nodes.txt"
+fi
