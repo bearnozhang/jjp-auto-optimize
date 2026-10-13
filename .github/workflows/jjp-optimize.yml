@@ -17,7 +17,7 @@ on:
         type: string
 
 env:
-  WORKER_API: ${{ secrets.WORKER_API || 'https://jjp.bearno1.dpdns.org/test/api/preferred-ips' }}
+  WORKER_API: https://jjp.bearno1981.workers.dev/test/api/preferred-ips  # 2026-10-13：自定义域对 GitHub 机房 IP 弹 Cloudflare 人机验证，CI 改走 workers.dev
   WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}  # 可选：Worker 端校验的写入 token
   MAX_LATENCY: 200  # 最大延迟阈值(ms)
   MIN_SUCCESS_RATE: 0.6  # 最低成功率
