@@ -81,7 +81,7 @@ jobs:
           # 检查订阅可用性
           echo ""
           echo "[4/4] 检查订阅可用性..."
-          SUB_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/sub_response.txt "https://jjp.bearno1.dpdns.org/test/sub" 2>/dev/null)
+          SUB_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/sub_response.txt "https://jjp.bearno1981.workers.dev/test/sub" 2>/dev/null)
           SUB_STATUS=$(echo "$SUB_RESPONSE" | tail -1)
           SUB_SIZE=$(wc -c < /tmp/sub_response.txt 2>/dev/null || echo 0)
           
