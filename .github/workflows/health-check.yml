@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  WORKER_API: ${{ secrets.WORKER_API || 'https://jjp.bearno1.dpdns.org/test/api/preferred-ips' }}
+  WORKER_API: https://jjp.bearno1981.workers.dev/test/api/preferred-ips  # 2026-10-13：自定义域对 GitHub 机房 IP 弹 Cloudflare 人机验证，CI 改走 workers.dev
 
 jobs:
   health-check:
