@@ -178,6 +178,7 @@ jobs:
             else
               FAIL_COUNT=$((FAIL_COUNT + 1))
               echo "[FAIL] $ip:$port - $RESPONSE"
+              [ "$FAIL_COUNT" -eq 1 ] && echo "::warning title=上传失败样例::$(echo "$RESPONSE" | tr -d '\r\n' | cut -c1-200)"
             fi
             
             sleep 1  # 避免KV竞态
@@ -192,6 +193,7 @@ jobs:
           echo "success=$SUCCESS_COUNT" >> $GITHUB_OUTPUT
           echo "existing=$EXIST_COUNT" >> $GITHUB_OUTPUT
           echo "failed=$FAIL_COUNT" >> $GITHUB_OUTPUT
+          echo "::notice title=上传统计::候选 $(wc -l < candidates.txt) / 有效 $(wc -l < valid_results.csv) / 成功 $SUCCESS_COUNT / 已存在 $EXIST_COUNT / 失败 $FAIL_COUNT"
       
       - name: Wait for KV cache
         run: |
@@ -209,6 +211,7 @@ jobs:
           UPDATED_COUNT=$(echo "$UPDATED" | jq '.count // 0' 2>/dev/null || echo 0)
           
           echo "更新后节点数量: $UPDATED_COUNT"
+          echo "::notice title=更新后节点数::$UPDATED_COUNT"
           
           # 显示节点列表
           echo ""
