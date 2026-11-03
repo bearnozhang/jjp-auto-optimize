@@ -15,12 +15,10 @@ vless://48ff2b70-e180-582f-8866-d9a2edeed5f5@51.158.206.96
 vless://48ff2b70-e180-582f-8866-d9a2edeed5f5@51.158.206.97
 vless://48ff2b70-e180-582f-8866-d9a2edeed5f5@51.158.206.98
 vless://48ff2b70-e180-582f-8866-d9a2edeed5f5@ww13.levikogjgfdd.ir
-vless://5254c281-3bc1-40ee-ba89-1aaf8c251402@nl-modx-prime.storagedirectguide.com
 vless://6e401cc8-5a85-483c-8f88-7a57e9961e59@xray2-direct-mci1-fs-ce.freesocks.work
 vless://727a9178-d7f0-4142-8205-b0d19959ded0@130.49.177.193
 vless://727a9178-d7f0-4142-8205-b0d19959ded0@de-2.ffpn.pro
 vless://7c053ca8-38cc-45e2-930c-eda1fd66f903@195.123.245.241
-vless://80fdddb8-3eb8-41ad-9916-fbb42c442e6e@141.193.154.234
 vless://85c1becc-fcd2-47ca-b8e7-6d0d30f3cd13@79.141.164.81
 vless://8892e34a-339b-4526-b88d-cf68c516231c@152.70.58.201
 vless://ad3f4a0a-a89f-498e-9869-a93c8fa185b1@germany1.xorsand.eu
