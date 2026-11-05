@@ -17,3 +17,4 @@ vless://48ff2b70-e180-582f-8866-d9a2edeed5f5@ww13.levikogjgfdd.ir
 vless://ca52e2b6-fb9f-4dac-b6dc-49da9923f251@209.200.246.148
 vless://d65cc14c-f53f-4fe2-b262-97856601319c@169.40.42.168
 vless://d65cc14c-f53f-4fe2-b262-97856601319c@169.40.42.35
+vless://eb8613e3-8393-4cff-a3ad-6501fd4adc63@152.69.195.67
